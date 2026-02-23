@@ -1,0 +1,40 @@
+【プロジェクト名】
+Rakuten_Favorite_Product_Information_Retrieval
+
+【テーマ】
+楽天市場のお気に入り登録商品情報の取得
+
+【言語】
+Python
+【フレームワーク】
+Playwright
+
+【Googleスプレッドシートの項目】
+A ⇒ ItemURL
+B ⇒ ShopCode
+C ⇒ ItemID
+D ⇒ ItemCode
+E ⇒ ItemName
+F ⇒ CollectionName
+G ⇒ CollectionGenre
+H ⇒ PostStatus
+I ⇒ PostedDate
+J ⇒ CollectionStatus
+K ⇒ CollectedDate
+
+【.env】
+RAKUTEN_USER_ID = "楽天市場のユーザーID"
+RAKUTEN_PASSWORD = "楽天市場のパスワード"
+SPREADSHEET_ID = "GoogleスプレッドシートのID"
+SHEET_NAME = "スプレッドシートのシート名"
+RAKUTEN_APP_ID = "楽天APIのAPP ID"
+
+【処理内容】
+1.楽天市場にログイン。
+2.お気に入りページに登録されている商品のURLをすべて取得。
+　- 取得した商品URLを保持し、shopCode、itemIdからitemCodeを作成する。
+3.楽天APIを使い、ItemNameを取得する。(楽天APIのインプット情報にはitemCodeを使用。)
+4.ItemURL、ShopCode、ItemId、ItemCode、ItemName、PostStatusに「未」、CollectionStatusに「未」をGoogleスプレッドシートに記載。
+　- itemCodeを確認し、一致している場合はスプレッドシートに記載しない。
+※2～4をお気に入りページに登録されている商品数だけ繰り返す。※
+5.プログラムを完了する。(開いたページはすべて閉じること。)
