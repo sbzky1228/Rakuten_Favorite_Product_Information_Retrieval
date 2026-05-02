@@ -1,38 +1,60 @@
-import os
-import pickle
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+"""
+Google Sheets ユーティリティモジュール - Google Sheetsサービス初期化関数
+ 
+Google Sheets APIへの接続・認証とサービスオブジェクトの取得を担当します。
+ 
+【認証方式について】
+サービスアカウント方式を使用しています。
+OAuth2方式と異なりトークンの期限切れが発生しないため、
+認証情報の更新処理は不要です。
+サービスアカウントのJSONファイルのパスは .env の SERVICE_ACCOUNT_PATH に記載してください。
+"""
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
-
-# Google Sheets APIのスコープ
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-
-def get_google_sheets_service():
+from config import SCOPES, SERVICE_ACCOUNT_PATH, SPREADSHEET_ID, SHEET_NAME
+ 
+ 
+def connect_to_sheets_and_get_existing_codes():
     """
-    Google Sheets APIのサービスオブジェクトを取得する関数
-
+    スプレッドシートに接続し、既存の商品コード一覧を取得する
+ 
+    【この関数をmain()の最初に実行する理由】
+    - 接続失敗を早期に検知し、無駄なブラウザ起動・楽天処理を防ぐ
+    - 取得したserviceを後続の書き込み処理に引き渡すことで
+      書き込み時に再度認証する必要がなくなる
+    - 重複チェック用の既存商品コードも同時に取得しておくことで
+      書き込み時のAPI呼び出しを1回に抑える
+ 
     Returns:
-        service: Google Sheets APIのサービスオブジェクト
+        tuple: (service, existing_item_codes)
+            - service: Google Sheets APIのサービスオブジェクト（失敗時はNone）
+            - existing_item_codes: 既存の商品コードのset（失敗時は空のset）
     """
-    creds = None
-    # トークンファイルが存在する場合、読み込む
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-    # クレデンシャルが無効または存在しない場合
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # クライアントシークレットファイルからフローを作成
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'client_secret_760100385433-1sk74s5lmguisme6baovdn73gi2ie8ks.apps.googleusercontent.com.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # 次回のためにトークンを保存
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-
-    # Google Sheets APIのサービスを構築
-    service = build('sheets', 'v4', credentials=creds)
-    return service
+    try:
+        # サービスアカウントで認証（トークン期限切れ・更新処理は不要）
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_PATH,
+            scopes=SCOPES
+        )
+        service = build('sheets', 'v4', credentials=creds)
+ 
+        # 既存の商品コードを取得（重複チェック用）
+        range_name = f"{SHEET_NAME}!A1"
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=range_name
+        ).execute()
+ 
+        existing_item_codes = set()
+        existing_values = result.get('values', [])
+        if existing_values:
+            # ヘッダー行をスキップしてD列（ItemCode）を取得
+            for row in existing_values[1:]:
+                if len(row) > 3:
+                    existing_item_codes.add(row[3])
+ 
+        return service, existing_item_codes
+ 
+    except Exception as e:
+        print(f"スプレッドシートへの接続に失敗しました: {e}")
+        return None, set()

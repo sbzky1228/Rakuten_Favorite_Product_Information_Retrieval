@@ -110,10 +110,6 @@ python main.py
 - OAuth 2.0認証情報が正しく配置されているか確認
 - 古い `token.pickle` を削除して再認証
 
-### 楽天API エラー
-- 楽天APP IDが正しいか確認
-- APIの利用制限を確認
-
 ## 必要な環境
 
 - Python 3.8以上
