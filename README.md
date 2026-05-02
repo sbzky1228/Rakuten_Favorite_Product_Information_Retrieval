@@ -1,92 +1,110 @@
 # 楽天市場お気に入り商品情報取得プログラム
 
-## プログラム構成
+## 概要
 
-このプログラムは、楽天市場のお気に入り商品情報を取得し、Googleスプレッドシートに記載するためのツールです。
+このプログラムは、楽天市場のお気に入り商品情報を自動で取得し、Googleスプレッドシートに整理して保存するツールです。
+
+Playwrightを使用したブラウザ自動化により、楽天市場にログインしてお気に入り商品のURLを収集し、各商品ページから商品名などの詳細情報を並列処理で取得します。
+
+## 主な機能
+
+- ✅ 楽天市場への自動ログイン
+- ✅ お気に入り商品URLの一括収集
+- ✅ 商品ページからの詳細情報取得（商品名、ショップコード、商品IDなど）
+- ✅ 並列処理による高速取得（最大3同時接続）
+- ✅ Googleスプレッドシートへの自動書き込み
+- ✅ 重複商品の自動スキップ
+- ✅ 詳細なログ出力
+
+## プログラム構成
 
 ### 主要モジュール
 
 #### 1. **config.py**
 - 環境変数の読み込みと設定管理
-- 楽天、Google Sheets のAPIキー
-- アプリケーション全体の定数設定
+- 楽天ログイン情報、Google Sheets設定
+- タイムアウトや並列処理の設定
 
 #### 2. **browser_manager.py**
 - Playwrightを使用したブラウザ管理
-- ページ操作（遷移、待機など）
-- ブラウザのライフサイクル管理
+- ブラウザ起動・終了のライフサイクル管理
+- ページオブジェクトの提供
 
 #### 3. **rakuten_login.py**
-- 楽天へのログイン処理
-- ログイン認証情報の入力
+- 楽天市場への自動ログイン処理
+- 認証情報の安全な管理
 
 #### 4. **fetch_favorites.py**
-- 楽天市場のお気に入り商品URL取得
-- URLからの商品情報抽出
+- お気に入りページからの商品URL収集
+- 各商品ページからの情報抽出（並列処理）
+- 独立したブラウザコンテキストによるメモリ管理
 
-#### 5. **Get_Favorite_Items_info.py**
-- 楽天APIを使用した商品詳細情報取得
+#### 5. **Write_Items_Info_to_Google_Sheet.py**
+- Google Sheets APIを使用したデータ書き込み
+- 既存商品との重複チェック
+- 書き込みエラーのハンドリング
 
-#### 6. **Write_Items_Info_to_Google_Sheet.py**
-- Google Sheetsへの商品情報書き込み
-- 重複チェック機能
+#### 6. **google_sheets_utils.py**
+- Google Sheets APIの初期化と認証
+- 既存データの取得と管理
 
-#### 7. **google_sheets_utils.py**
-- Google Sheets APIのユーティリティ
+#### 7. **logger.py**
+- 構造化されたログ出力
+- ログファイルの自動管理
 
-#### 8. **logger.py**
-- ログ出力管理
-- ログファイルの記録
+#### 8. **main.py**
+- メイン処理の統合制御
+- エラーハンドリングとリソース管理
 
-#### 9. **main.py**
-- メイン処理（各モジュールの統合）
-- 処理フロー全体の制御
-
-### 処理フロー
+## 処理フロー
 
 ```
-1. ブラウザ起動
-2. 楽天へのログイン
-3. お気に入り商品情報の取得
-4. Google Sheetsへの情報追加
-5. 未投稿商品の取得
-6. ChatGPTで紹介文生成
-7. 各商品をROOMに投稿
-   ├─ 投稿処理
-   ├─ Google Sheets更新
-   └─ コレクション追加
-8. ブラウザ終了
+1. Google Sheets接続確認・既存データ取得
+2. ブラウザ起動（UI表示モード）
+3. 楽天市場への自動ログイン
+4. お気に入り商品URLの一括収集
+5. 商品ページからの詳細情報並列取得
+6. Google Sheetsへの新規商品書き込み
+7. ブラウザ終了・リソース解放
 ```
 
 ## セットアップ手順
 
 ### 1. 環境構築
 ```bash
-# 仮想環境の作成
+# Python仮想環境の作成
 python -m venv venv
 
 # 仮想環境の有効化
-.\venv\Scripts\activate
+.\venv\Scripts\activate  # Windowsの場合
 
-# パッケージのインストール
+# 必要なパッケージのインストール
 pip install -r requirements.txt
 
-# Playwrightの初期化
-playwright install
+# Playwrightブラウザのインストール
+playwright install chromium
 ```
 
-### 2. .env ファイルの作成
-```
-RAKUTEN_USER_ID=your_user_id
-RAKUTEN_PASSWORD=your_password
+### 2. Google Sheets APIの設定
+1. [Google Cloud Console](https://console.cloud.google.com/)で新規プロジェクト作成
+2. Google Sheets APIを有効化
+3. サービスアカウントを作成し、JSONキーをダウンロード
+4. スプレッドシートを作成し、サービスアカウントに編集権限を付与
+
+### 3. .envファイルの作成
+```env
+# 楽天市場ログイン情報
+RAKUTEN_USER_ID=your_rakuten_id
+RAKUTEN_PASSWORD=your_rakuten_password
+
+# Google Sheets設定
 SPREADSHEET_ID=your_spreadsheet_id
 SHEET_NAME=Sheet1
-OPENAI_API_KEY=your_openai_api_key
-```
+SERVICE_ACCOUNT_PATH=path/to/service_account.json
 
-### 3. Google認証の設定
-- Google Cloud ConsoleでOAuth 2.0認証情報を作成
-- `client_secret_*.json` ファイルをプロジェクトディレクトリに配置
+# プログラム設定
+HEADLESS_MODE=false  # UI表示モード（安定動作のため）
+```
 
 ## 実行方法
 
@@ -95,9 +113,83 @@ OPENAI_API_KEY=your_openai_api_key
 python main.py
 ```
 
-## ログ出力
+### ログ確認
+実行時の詳細ログは `logs/` ディレクトリに保存されます：
+```
+logs/rakuten_room_YYYYMMDD_HHMMSS.log
+```
 
-ログファイルは `logs/` ディレクトリに以下のフォーマットで保存されます：
+## 技術仕様
+
+### 並列処理
+- 最大3つの独立ブラウザコンテキストを同時使用
+- 各コンテキストは処理後に確実に解放
+- メモリリーク防止のためのセマフォ制御
+
+### エラーハンドリング
+- ネットワークエラー時の自動リトライ
+- 商品情報取得失敗時のログ記録
+- ブラウザクラッシュ時の安全終了
+
+### セキュリティ
+- 環境変数による認証情報管理
+- ログファイルにパスワードを含まない設計
+- サービスアカウントによるGoogle APIアクセス
+
+## トラブルシューティング
+
+### よくある問題
+
+#### 楽天ログインが失敗する
+- 楽天IDとパスワードが正しいか確認
+- 2段階認証が有効になっていないか確認
+- 楽天の利用制限がかかっていないか確認
+
+#### Google Sheets書き込みエラー
+- サービスアカウントのJSONファイルが正しい場所にあるか確認
+- スプレッドシートIDが正しいか確認
+- サービスアカウントに編集権限が付与されているか確認
+
+#### 商品情報が取得できない
+- 楽天市場のページ構造が変わっていないか確認
+- ネットワーク接続が安定しているか確認
+- ログファイルで詳細なエラー内容を確認
+
+### ログの確認方法
+```bash
+# 最新のログファイルを確認
+Get-ChildItem logs\ -Name | Select-Object -Last 1
+```
+
+## 必要な環境
+
+- **Python**: 3.8以上
+- **OS**: Windows 10/11, macOS, Linux
+- **ブラウザ**: Chromium（Playwrightに同梱）
+- **Googleアカウント**: Sheets API有効化済み
+- **楽天市場アカウント**: 有効なログイン情報
+
+## 制限事項
+
+- 楽天市場の仕様変更により動作しなくなる可能性あり
+- 短時間に大量のリクエストを送ると楽天から制限される可能性あり
+- Google Sheets APIの無料利用枠を超えると課金が必要
+
+## 更新履歴
+
+### v3.1 (2026-05-XX)
+- 並列処理による高速化（独立コンテキスト使用）
+- メモリリーク防止のためのリソース管理改善
+- UI表示モードでの安定動作確認
+
+### v3.0 (2024-02-XX)
+- 楽天ROOM投稿機能からお気に入り商品情報取得機能へ変更
+- 重複チェック機能の追加
+- 構成ファイルに基づく再構成
+
+## ライセンス
+
+このプログラムは個人使用を想定しています。商用利用については別途ご相談ください。
 - ファイル名: `rakuten_room_YYYYMMDD_HHMMSS.log`
 
 ## トラブルシューティング
