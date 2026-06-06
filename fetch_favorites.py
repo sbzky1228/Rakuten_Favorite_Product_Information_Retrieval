@@ -8,7 +8,7 @@ from playwright.async_api import Page, Browser
 from config import RAKUTEN_FAVORITES_URL, RAKUTEN_FAVORITES_ALT_URL
  
  
-async def get_favorite_items_info(page: Page, browser: Browser, max_items: int = 200) -> List[Dict]:
+async def get_favorite_items_info(page: Page, browser: Browser, max_items: int = 200, existing_item_codes: set = None) -> List[Dict]:
     """
     楽天市場のお気に入り商品情報を取得
     
@@ -16,10 +16,15 @@ async def get_favorite_items_info(page: Page, browser: Browser, max_items: int =
         page: Playwrightのページオブジェクト（お気に入りページ遷移用）
         browser: Playwrightのブラウザオブジェクト（各タスク用の独立コンテキスト作成用）
         max_items: 取得する最大商品数
+        existing_item_codes: スプレッドシートに登録済みの商品コードのset
+                             指定することで既存商品の商品ページ遷移をスキップできる
     
     Returns:
         List[Dict]: 商品情報のリスト
     """
+    # Noneの場合は空のsetとして扱う
+    if existing_item_codes is None:
+        existing_item_codes = set()
     try:
         print(f"[DEBUG] 現在のページからお気に入りリンクを探す: {page.url}")
  
@@ -113,10 +118,28 @@ async def get_favorite_items_info(page: Page, browser: Browser, max_items: int =
             print("[DEBUG] お気に入り商品のURLが1件も収集できませんでした。")
             return []
 
-        # 並列処理で商品情報を取得
+        # 既存商品をスキップして新規商品のみ処理対象にする
+        new_urls = []
+        skip_count = 0
+        for url in urls[:max_items]:
+            pattern = r'item\.rakuten\.co\.jp/([^/]+)/([^/?]+)'
+            match = re.search(pattern, url)
+            if match:
+                shop_code = match.group(1)
+                item_id = match.group(2)
+                item_code = f"{shop_code}:{item_id}"
+                # 既存商品は商品ページへの遷移をスキップ
+                if item_code in existing_item_codes:
+                    skip_count += 1
+                    continue
+            new_urls.append(url)
+
+        print(f"新規商品: {len(new_urls)}件 / スキップ（既存）: {skip_count}件")
+
+        # 並列処理で新規商品のみ商品情報を取得
         tasks = [
             extract_item_info_with_semaphore(url, browser, semaphore) 
-            for url in urls[:max_items]
+            for url in new_urls
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         

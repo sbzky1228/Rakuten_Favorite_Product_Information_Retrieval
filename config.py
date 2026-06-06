@@ -53,11 +53,12 @@ COLUMN_MAP = {
     'ItemID': 'C',            # C列: 商品ID
     'ItemCode': 'D',          # D列: 商品コード
     'ItemName': 'E',          # E列: 商品名
-    'Collection': 'F',        # F列: コレクション名
-    'PostStatus': 'G',        # G列: 投稿ステータス (未/済)
-    'PostedDate': 'H',        # H列: 投稿日時
-    'CollectionStatus': 'I',  # I列: コレクションステータス (未/済)
-    'CollectedDate': 'J'      # J列: コレクション日時
+    'CollectionName': 'F',    # F列: コレクション名
+    'CollectionGenre': 'G',   # G列: コレクションジャンル
+    'PostStatus': 'H',        # H列: 投稿ステータス (未/済)
+    'PostedDate': 'I',        # I列: 投稿日時
+    'CollectionStatus': 'J',  # J列: コレクションステータス (未/済)
+    'CollectedDate': 'K'      # K列: コレクション日時
 }
 
 # ============================================================

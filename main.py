@@ -43,7 +43,7 @@ async def main():
         # ここで失敗した場合、ブラウザ起動前に即終了する
         # ============================================================
         logger.info("スプレッドシートへの接続を確認しています...")
-        service, existing_item_codes = connect_to_sheets_and_get_existing_codes()
+        service, existing_item_codes, has_header = connect_to_sheets_and_get_existing_codes()
  
         if service is None:
             logger.error("スプレッドシートへの接続に失敗しました。処理を終了します。")
@@ -70,7 +70,7 @@ async def main():
         # ステップ4: お気に入り商品のURLを取得
         # ============================================================
         logger.info("お気に入り商品のURLを取得しています...")
-        favorite_items = await get_favorite_items_info(page, browser_manager.get_browser(), max_items=200)
+        favorite_items = await get_favorite_items_info(page, browser_manager.get_browser(), max_items=200, existing_item_codes=existing_item_codes)
  
         if not favorite_items:
             logger.warning("お気に入り商品が見つかりません。処理を終了します。")
@@ -93,7 +93,7 @@ async def main():
         # serviceとexisting_item_codesはステップ1で取得済みのものを渡す
         # ============================================================
         logger.info("Google Sheetsに商品情報を書き込んでいます...")
-        write_items_info_to_google_sheet(service, existing_item_codes, items_to_write)
+        write_items_info_to_google_sheet(service, existing_item_codes, items_to_write, has_header)
  
         logger.info("=" * 80)
         logger.info("楽天市場お気に入り商品情報取得プログラムが完了しました")
