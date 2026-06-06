@@ -39,7 +39,8 @@ def connect_to_sheets_and_get_existing_codes():
         service = build('sheets', 'v4', credentials=creds)
  
         # 既存の商品コードを取得（重複チェック用）
-        range_name = f"{SHEET_NAME}!A1"
+        # シート全体の値を取得する（単一セルA1のみだとデータが取れないため）
+        range_name = f"{SHEET_NAME}!A1:J"
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=range_name
@@ -47,13 +48,14 @@ def connect_to_sheets_and_get_existing_codes():
  
         existing_item_codes = set()
         existing_values = result.get('values', [])
+        has_header = bool(existing_values)
         if existing_values:
             # ヘッダー行をスキップしてD列（ItemCode）を取得
             for row in existing_values[1:]:
                 if len(row) > 3:
                     existing_item_codes.add(row[3])
  
-        return service, existing_item_codes
+        return service, existing_item_codes, has_header
  
     except Exception as e:
         print(f"スプレッドシートへの接続に失敗しました: {e}")

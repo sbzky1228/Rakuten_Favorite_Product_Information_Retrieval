@@ -7,17 +7,21 @@ Google Sheets 書き込みモジュール - 商品情報をスプレッドシー
 【設計方針】
 このファイルは書き込み処理のみに専念します。
 接続・認証処理は google_sheets_utils.py が担当します。
+ 
+【書き込み方針】
+既存データは一切上書きしません。
+新規商品のみスプレッドシートの一番下の行に追加します。
+楽天市場のお気に入りから削除された商品もスプレッドシートには残ります。
 """
 from config import SPREADSHEET_ID, SHEET_NAME
- 
- 
-def write_items_info_to_google_sheet(service, existing_item_codes, items):
+
+def write_items_info_to_google_sheet(service, existing_item_codes, items, has_header):
     """
-    商品情報をGoogleスプレッドシートに書き込む関数
+    商品情報をGoogleスプレッドシートの一番下に追加する関数
  
     以下の処理を実行します:
     1. 新規商品のみを抽出（既存商品は重複チェックでスキップ）
-    2. スプレッドシートに書き込み
+    2. スプレッドシートの一番下の行に追加（既存データは上書きしない）
     3. 更新結果をログ出力
  
     Args:
@@ -36,20 +40,16 @@ def write_items_info_to_google_sheet(service, existing_item_codes, items):
     """
     # 書き込む範囲（シート名はconfig.pyから取得）
     range_name = f"{SHEET_NAME}!A1"
- 
-    # スプレッドシートに記録するデータを準備（ヘッダー行から開始）
-    values = [
-        ['ItemURL', 'ShopCode', 'ItemID', 'ItemCode', 'ItemName', 'CollectionName', 'CollectionGenre', 'PostStatus', 'PostedDate', 'CollectionStatus', 'CollectedDate']
-    ]
- 
-    # 新規商品情報を追加（既存商品は重複チェックでスキップ）
+
+    # 新規商品のみを抽出
+    values = []
     for item in items:
         item_code = item.get('ItemCode', '')
- 
+
         # 既に登録されている商品コードの場合はスキップ
         if item_code in existing_item_codes:
             continue
- 
+
         # 商品情報を行として追加
         values.append([
             item.get('ItemURL', ''),            # A列: 商品URL
@@ -64,20 +64,31 @@ def write_items_info_to_google_sheet(service, existing_item_codes, items):
             item.get('CollectionStatus', '未'), # J列: コレクションステータス
             ''                                  # K列: コレクション日時（初期値：空）
         ])
- 
-    # ヘッダーのみの場合（新規商品がない場合）は処理をスキップ
-    if len(values) == 1:
+
+    # 新規商品がない場合は処理をスキップ
+    if not values:
         print("新規追加する商品がありません。")
         return
- 
-    # スプレッドシートに書き込み
-    result = service.spreadsheets().values().update(
+
+    # スプレッドシートが空の場合（初回実行時）はヘッダーを先頭に追加する
+    # existing_item_codesが空 = スプレッドシートにデータが存在しない
+    if not has_header:
+        values.insert(0, [
+            'ItemURL', 'ShopCode', 'ItemID', 'ItemCode', 'ItemName',
+            'CollectionName', 'CollectionGenre', 'PostStatus', 'PostedDate',
+            'CollectionStatus', 'CollectedDate'
+        ])
+        print("[DEBUG] 初回実行のためヘッダーを追加します。")
+
+    # スプレッドシートの一番下の行に追加（既存データは上書きしない）
+    result = service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
         range=range_name,
         valueInputOption='RAW',
+        insertDataOption='INSERT_ROWS',  # 既存データの下に新規行として追加
         body={'values': values}
     ).execute()
- 
+
     # 更新結果をログ出力
-    updated_cells = result.get('updatedCells', 0)
-    print(f"✓ {updated_cells} セルが更新されました。")
+    updated_cells = result.get('updates', {}).get('updatedCells', 0)
+    print(f"✓ {len(values)}件の新規商品を追加しました（{updated_cells}セル更新）")
