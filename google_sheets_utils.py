@@ -59,4 +59,4 @@ def connect_to_sheets_and_get_existing_codes():
  
     except Exception as e:
         print(f"スプレッドシートへの接続に失敗しました: {e}")
-        return None, set()
+        return None, set(), False

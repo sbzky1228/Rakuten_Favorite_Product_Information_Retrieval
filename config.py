@@ -11,10 +11,51 @@
 - 楽天ルームURL定義
 """
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
+
+def _resolve_env_path() -> Path | None:
+    candidates = []
+    if getattr(sys, 'frozen', False):
+        candidates.append(Path(sys._MEIPASS) / '.env')
+        candidates.append(Path(sys.executable).resolve().parent / '.env')
+    candidates.append(Path.cwd() / '.env')
+    candidates.append(Path(__file__).resolve().parent / '.env')
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return None
+
+
+def _resolve_path_from_env(value: str, base_dir: Path) -> str:
+    if not value:
+        return ''
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+
+    candidate = base_dir / path
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    candidate = Path.cwd() / path
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    candidate = Path(__file__).resolve().parent / path
+    return str(candidate.resolve())
+
+
 # .envファイルを読み込む（機密な情報を環境変数から取得）
-load_dotenv('.env')
+ENV_PATH = _resolve_env_path()
+if ENV_PATH:
+    load_dotenv(str(ENV_PATH))
+    ENV_DIR = ENV_PATH.parent
+else:
+    load_dotenv('.env')
+    ENV_DIR = Path.cwd()
 
 # ============================================================
 # 楽天ログイン情報
@@ -27,12 +68,23 @@ RAKUTEN_PASSWORD = os.getenv('RAKUTEN_PASSWORD', '')  # 楽天パスワード
 # ============================================================
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '')  # Googleスプレッドシートの一意のID
 SHEET_NAME = os.getenv('SHEET_NAME', 'Sheet1')  # シート名
-SERVICE_ACCOUNT_PATH = os.getenv('SERVICE_ACCOUNT_PATH', '')  # サービスアカウントのパス
+SERVICE_ACCOUNT_PATH = _resolve_path_from_env(os.getenv('SERVICE_ACCOUNT_PATH', ''), ENV_DIR)
 
 # ============================================================
 # Playwright設定
 # （ブラウザ自動化ツールの設定）
 # ============================================================
+PLAYWRIGHT_BROWSERS_PATH = _resolve_path_from_env(os.getenv('PLAYWRIGHT_BROWSERS_PATH', ''), ENV_DIR)
+CHROMIUM_EXECUTABLE_PATH = _resolve_path_from_env(os.getenv('CHROMIUM_EXECUTABLE_PATH', ''), ENV_DIR)
+
+if not PLAYWRIGHT_BROWSERS_PATH and getattr(sys, 'frozen', False):
+    default_playwright = Path(os.path.expanduser('~')) / 'AppData' / 'Local' / 'ms-playwright'
+    if default_playwright.exists():
+        PLAYWRIGHT_BROWSERS_PATH = str(default_playwright)
+
+if PLAYWRIGHT_BROWSERS_PATH:
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = PLAYWRIGHT_BROWSERS_PATH
+
 HEADLESS_MODE = False   # ヘッドレスモード（UIを表示しない）
 BROWSER_TIMEOUT = 60000  # ブラウザタイムアウト時間（ミリ秒）
 PAGE_LOAD_TIMEOUT = 30000  # ページ読み込み待機時間（ミリ秒）
