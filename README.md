@@ -81,9 +81,13 @@ python -m venv venv
 # 必要なパッケージのインストール
 pip install -r requirements.txt
 
-# Playwrightブラウザのインストール
-playwright install chromium
+# Playwright本体とブラウザのインストール
+pip install playwright
+python -m playwright install chromium
 ```
+
+> `.env` はリポジトリルート、または実行時のカレントディレクトリに置いてください。
+> 実行ファイル化した場合は、`exe` と同じフォルダ、または `exe` を起動した作業ディレクトリに配置するのが確実です。
 
 ### 2. Google Sheets APIの設定
 1. [Google Cloud Console](https://console.cloud.google.com/)で新規プロジェクト作成
@@ -102,9 +106,25 @@ SPREADSHEET_ID=your_spreadsheet_id
 SHEET_NAME=Sheet1
 SERVICE_ACCOUNT_PATH=path/to/service_account.json
 
+# Playwright設定（必要に応じて）
+# PLAYWRIGHT_BROWSERS_PATH=C:\Users\<your_user>\AppData\Local\ms-playwright
+
 # プログラム設定
-HEADLESS_MODE=false  # UI表示モード（安定動作のため）
+# HEADLESS_MODE は config.py の HEADLESS_MODE で設定します。
+# .env ではなくこのファイルを編集してください。
 ```
+
+### 4. 実行ファイルの作成（PyInstaller）
+このプロジェクトでは `RakutenFavorite.spec` による PyInstaller ビルドが使えます。
+```bash
+pip install pyinstaller
+pyinstaller RakutenFavorite.spec
+```
+
+- ビルド後の実行ファイルは `dist\RakutenFavorite\RakutenFavorite.exe` のように生成されます。
+- `*.exe` を起動する場合、`.env` は `exe` と同じフォルダ、または `exe` を起動した作業ディレクトリに置いてください。
+- Playwright のブラウザバイナリは Windows では通常 `C:\Users\<your_user>\AppData\Local\ms-playwright` に作成されます。
+- `PLAYWRIGHT_BROWSERS_PATH` を `.env` に指定すると、別の場所にインストールした場合でも動作します。
 
 ## 実行方法
 
