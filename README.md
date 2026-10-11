@@ -28,6 +28,9 @@ Playwrightでブラウザを操作して楽天市場にログインし、お気�
 | `Write_Items_Info_to_Google_Sheet.py` | 新規商品のスプレッドシートへの追記 |
 | `logger.py` | ログ出力（コンソールとログファイル） |
 | `.env.example` | `.env`（設定ファイル）のひな形 |
+| `tests\` | 自動テスト（ブラウザ・スプレッドシートを使わずに動作を確認する） |
+| `.github\workflows\tests.yml` | GitHub Actions の設定（GitHubにpushしたときに自動テストを実行する） |
+| `requirements-dev.txt` | テスト用のパッケージ（pytest・pyflakes・vulture） |
 
 ### 処理フロー
 
@@ -62,6 +65,9 @@ python -m venv venv
 
 # 仮想環境の有効化
 .\venv\Scripts\activate
+
+# pip を最新にする（古いpipは日本語を含む requirements-dev.txt を読めずにエラーになる）
+python -m pip install --upgrade pip
 
 # パッケージのインストール
 pip install -r requirements.txt
@@ -130,6 +136,46 @@ python main.py
 ```
 
 - 実行するとブラウザ（Chromium）の画面が開き、自動で操作されます。操作中は画面に触れないでください。
+
+### 自動テスト
+
+ブラウザやスプレッドシートを使わずに、プログラムの動作を確認できます。楽天にもスプレッドシートにも接続しないので、何度実行しても問題ありません。
+コードを修正したときに実行してください。
+
+```powershell
+pip install -r requirements-dev.txt     # 初回のみ（pytest などテスト用のツールを入れる）
+python -m pytest tests
+```
+
+`61 passed` のように表示され、`failed` が無ければ問題ありません。
+
+主に次のことを確認しています。
+
+| テストファイル | 確認していること |
+|---|---|
+| `test_fetch_favorites.py` | お気に入りURLの収集・重複除去・ページ送りの終了（無限ループしない）、登録済み商品のスキップ、商品名の取得と「【楽天市場】」等の除去、商品名が取れない商品を登録しないこと、ページの使い回しと後片付け |
+| `test_rakuten_login.py` | ログイン画面の操作の順番（ID → パスワードを使用する → パスワード、再認証の確認画面）、ID・パスワードを1回しか送信しないこと（アカウントロック防止） |
+| `test_google_sheets.py` | 登録済み商品コードを見出し名で取得すること、見出しの順番どおりに追記すること、追加した商品のログ |
+| `test_main.py` | 接続失敗時にブラウザを起動しないこと、失敗時に書き込まず「完了」と記録しないこと、必ずブラウザを閉じること |
+| `test_config_logger.py` | ログの保存先（`LOG_DIR`）、cp932の画面でも止まらないこと |
+
+コードの誤り・使っていないコードのチェックも、GitHub Actions と同じコマンドで実行できます。
+
+```powershell
+python -m pyflakes *.py tests/*.py
+python -m vulture *.py tests/*.py --min-confidence 60
+```
+
+何も表示されなければ問題ありません。
+
+#### GitHubでの自動テスト（GitHub Actions）
+
+GitHubにpush（またはプルリクエストを作成）すると、GitHub上で自動的に上記のチェックとテストが実行されます（設定ファイル: `.github/workflows/tests.yml`）。
+楽天やスプレッドシートには接続しないため、`.env` やJSONキーをGitHubに置く必要はありません（置かないでください）。
+
+- 結果の見方: GitHubのリポジトリの「Actions」タブを開くと、実行ごとに ✅（成功）か ❌（失敗）が表示されます。❌ をクリックすると、どのテストが失敗したか確認できます。
+- 手動で実行: 「Actions」タブ →「テスト」→「Run workflow」
+- 失敗したときは、パソコンで `python -m pytest tests` を実行して同じエラーが出るか確認し、修正してから再度pushしてください。
 
 ### ログインとセッションの保存（user_data）
 - ログイン状態は `user_data` フォルダに保存され、2回目以降の実行ではID・パスワードの入力を省略します。
@@ -326,6 +372,10 @@ dist\
 このプログラムは個人使用を想定しています。
 
 ## 更新履歴
+
+### v3.4 (2026-10-12)
+- 自動テスト（pytest）と GitHub Actions での自動実行を追加
+- 環境構築の手順に pip の更新を追加
 
 ### v3.3 (2026-10-11)
 - ログ・`user_data` の保存先をプログラムのフォルダに固定し、`.env` の `LOG_DIR` で任意のフォルダを指定可能に
