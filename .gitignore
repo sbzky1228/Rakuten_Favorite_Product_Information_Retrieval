@@ -4,6 +4,7 @@
 *.key
 *.pem
 *.spec
+user_data/
 
 # --- drivers / binaries ---
 msedgedriver.exe
@@ -52,3 +53,5 @@ logs/
 client_secret_*.json
 chrome-data/
 EOF
+# --- PyInstaller ---
+pyinstaller_debug.log

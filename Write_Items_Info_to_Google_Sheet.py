@@ -2,7 +2,7 @@
 Google Sheets 書き込みモジュール - 商品情報をスプレッドシートに書き込む
  
 楽天で取得した商品情報をGoogle Sheetsに記録します。
-重複チェック機能により、既に登録されている商品は上書きしません。
+登録済みの商品は、お気に入りの取得時（fetch_favorites.py）に除外済みです。
  
 【設計方針】
 このファイルは書き込み処理のみに専念します。
@@ -14,81 +14,53 @@ Google Sheets 書き込みモジュール - 商品情報をスプレッドシー
 楽天市場のお気に入りから削除された商品もスプレッドシートには残ります。
 """
 from config import SPREADSHEET_ID, SHEET_NAME
+from logger import get_logger
 
-def write_items_info_to_google_sheet(service, existing_item_codes, items, has_header):
+# 初回実行時（シートが空の場合）に書き込む見出し
+DEFAULT_HEADER = [
+    'ItemURL', 'ShopCode', 'ItemID', 'ItemCode', 'ItemName',
+    'CollectionName', 'CollectionGenre', 'PostStatus', 'PostedDate',
+    'CollectionStatus', 'CollectedDate'
+]
+
+
+def write_items_info_to_google_sheet(service, items, header):
     """
     商品情報をGoogleスプレッドシートの一番下に追加する関数
- 
+
     以下の処理を実行します:
-    1. 新規商品のみを抽出（既存商品は重複チェックでスキップ）
+    1. 1行目の見出しの並び順に合わせて行を作成（見出しに無い項目は空にする）
     2. スプレッドシートの一番下の行に追加（既存データは上書きしない）
-    3. 更新結果をログ出力
- 
+    3. 追加結果をログ出力
+
     Args:
         service: Google Sheets APIのサービスオブジェクト
                  （google_sheets_utils.pyで取得済みのものを引き渡す）
-        existing_item_codes (set): 既存の商品コードのset
-                                   （google_sheets_utils.pyで取得済みのものを引き渡す）
-        items (list): 商品情報のリスト（各要素は辞書形式で以下を含む）
-                    - ItemURL: 商品URL
-                    - ShopCode: ショップコード
-                    - ItemID: 商品ID
-                    - ItemCode: 商品コード
-                    - ItemName: 商品名
-                    - PostStatus: 投稿ステータス
-                    - CollectionStatus: コレクションステータス
+        items (list): 新規商品の情報のリスト（登録済みの商品はfetch_favorites.pyで除外済み）
+                    各要素は ItemURL, ShopCode, ItemID, ItemCode, ItemName, PostStatus, CollectionStatus を含む辞書
+        header (list): スプレッドシート1行目の見出し（シートが空の場合は空のリスト）
     """
-    # 書き込む範囲（シート名はconfig.pyから取得）
-    range_name = f"{SHEET_NAME}!A1"
-
-    # 新規商品のみを抽出
-    values = []
-    for item in items:
-        item_code = item.get('ItemCode', '')
-
-        # 既に登録されている商品コードの場合はスキップ
-        if item_code in existing_item_codes:
-            continue
-
-        # 商品情報を行として追加
-        values.append([
-            item.get('ItemURL', ''),            # A列: 商品URL
-            item.get('ShopCode', ''),           # B列: ショップコード
-            item.get('ItemID', ''),             # C列: 商品ID
-            item_code,                          # D列: 商品コード
-            item.get('ItemName', ''),           # E列: 商品名
-            '',                                 # F列: コレクション名（初期値：空）
-            '',                                 # G列: コレクションジャンル（初期値：空）
-            item.get('PostStatus', '未'),       # H列: 投稿ステータス
-            '',                                 # I列: 投稿日時（初期値：空）
-            item.get('CollectionStatus', '未'), # J列: コレクションステータス
-            ''                                  # K列: コレクション日時（初期値：空）
-        ])
-
-    # 新規商品がない場合は処理をスキップ
-    if not values:
-        print("新規追加する商品がありません。")
+    logger = get_logger()
+    if not items:
+        logger.info("新規追加する商品がありません。")
         return
 
-    # スプレッドシートが空の場合（初回実行時）はヘッダーを先頭に追加する
-    # existing_item_codesが空 = スプレッドシートにデータが存在しない
-    if not has_header:
-        values.insert(0, [
-            'ItemURL', 'ShopCode', 'ItemID', 'ItemCode', 'ItemName',
-            'CollectionName', 'CollectionGenre', 'PostStatus', 'PostedDate',
-            'CollectionStatus', 'CollectedDate'
-        ])
-        print("[DEBUG] 初回実行のためヘッダーを追加します。")
+    # シートが空の場合（初回実行時）は既定の見出しを使い、先頭に見出し行を追加する
+    columns = header or DEFAULT_HEADER
+    values = [[item.get(column, '') for column in columns] for item in items]
+    if not header:
+        values.insert(0, list(DEFAULT_HEADER))
+        logger.info("シートが空のため、1行目に見出しを追加します。")
 
     # スプレッドシートの一番下の行に追加（既存データは上書きしない）
-    result = service.spreadsheets().values().append(
+    service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
-        range=range_name,
+        range=f"{SHEET_NAME}!A1",
         valueInputOption='RAW',
         insertDataOption='INSERT_ROWS',  # 既存データの下に新規行として追加
         body={'values': values}
     ).execute()
 
-    # 更新結果をログ出力
-    updated_cells = result.get('updates', {}).get('updatedCells', 0)
-    print(f"✓ {len(values)}件の新規商品を追加しました（{updated_cells}セル更新）")
+    logger.info(f"✓ {len(items)}件の新規商品をスプレッドシートに追加しました")
+    for item in items:
+        logger.info(f"追加した商品: {item.get('ItemCode', '')} / {item.get('ItemName', '')}")

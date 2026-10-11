@@ -12,6 +12,7 @@ OAuth2方式と異なりトークンの期限切れが発生しないため、
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from config import SCOPES, SERVICE_ACCOUNT_PATH, SPREADSHEET_ID, SHEET_NAME
+from logger import get_logger
  
  
 def connect_to_sheets_and_get_existing_codes():
@@ -26,9 +27,10 @@ def connect_to_sheets_and_get_existing_codes():
       書き込み時のAPI呼び出しを1回に抑える
  
     Returns:
-        tuple: (service, existing_item_codes)
+        tuple: (service, existing_item_codes, header)
             - service: Google Sheets APIのサービスオブジェクト（失敗時はNone）
             - existing_item_codes: 既存の商品コードのset（失敗時は空のset）
+            - header: 1行目の見出しのリスト（シートが空の場合・失敗時は空のリスト）
     """
     try:
         # サービスアカウントで認証（トークン期限切れ・更新処理は不要）
@@ -40,7 +42,7 @@ def connect_to_sheets_and_get_existing_codes():
  
         # 既存の商品コードを取得（重複チェック用）
         # シート全体の値を取得する（単一セルA1のみだとデータが取れないため）
-        range_name = f"{SHEET_NAME}!A1:J"
+        range_name = f"{SHEET_NAME}!A1:K"
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range=range_name
@@ -48,15 +50,19 @@ def connect_to_sheets_and_get_existing_codes():
  
         existing_item_codes = set()
         existing_values = result.get('values', [])
-        has_header = bool(existing_values)
+        header = existing_values[0] if existing_values else []
         if existing_values:
-            # ヘッダー行をスキップしてD列（ItemCode）を取得
+            # ヘッダー行からItemCodeの列を探し、2行目以降の商品コードを取得
+            if 'ItemCode' not in header:
+                get_logger().error("スプレッドシートの1行目に必須列 'ItemCode' が見つかりません")
+                return None, set(), []
+            item_code_col = header.index('ItemCode')
             for row in existing_values[1:]:
-                if len(row) > 3:
-                    existing_item_codes.add(row[3])
+                if len(row) > item_code_col and row[item_code_col]:
+                    existing_item_codes.add(row[item_code_col])
  
-        return service, existing_item_codes, has_header
+        return service, existing_item_codes, header
  
     except Exception as e:
-        print(f"スプレッドシートへの接続に失敗しました: {e}")
-        return None, set(), False
+        get_logger().error(f"スプレッドシートへの接続に失敗しました: {e}")
+        return None, set(), []

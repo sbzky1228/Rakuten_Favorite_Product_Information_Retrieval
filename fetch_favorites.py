@@ -3,388 +3,296 @@
 """
 import asyncio
 import re
-from typing import List, Dict, Optional
-from playwright.async_api import Page, Browser
-from config import RAKUTEN_FAVORITES_URL, RAKUTEN_FAVORITES_ALT_URL
- 
- 
-async def get_favorite_items_info(page: Page, browser: Browser, max_items: int = 200, existing_item_codes: set = None) -> List[Dict]:
+from typing import Dict, List, Optional
+from playwright.async_api import BrowserContext, Page, Route
+from config import RAKUTEN_FAVORITES_URL
+from logger import get_logger
+from rakuten_login import complete_login_form, is_login_page
+
+# 商品URL（https://item.rakuten.co.jp/{ShopCode}/{ItemID}/）からショップコードと商品IDを取り出す
+ITEM_URL_PATTERN = re.compile(r'item\.rakuten\.co\.jp/([^/?#]+)/([^/?#]+)')
+
+# お気に入り一覧の商品リンクのうち、メインエリアにあるものだけを返す（サイドバーのおすすめ等は除外）
+# リンクごとにブラウザとやり取りすると遅いため、1回の呼び出しでまとめて取得する
+COLLECT_LINKS_SCRIPT = """
+links => links
+  .filter(a => !a.closest('.styles__sideBarBlock___M-hla'))
+  .filter(a => a.closest('.bookmarkPage__block--centerContent') || a.closest('#bookmark-main'))
+  .map(a => a.href)
+"""
+
+# お気に入り一覧の「次へ」ボタン
+NEXT_BUTTON_SELECTOR = (
+    "a.styles__nextPageBtn___3CWcG, a[aria-label='Next'], a[aria-label='次へ'], a:has-text('次へ')"
+)
+
+# 商品ページの同時取得数
+MAX_PARALLEL_PAGES = 3
+
+# お気に入り一覧のページ送りの上限（ページ構造の変化で終了判定できない場合の無限ループ防止）
+MAX_FAVORITE_PAGES = 50
+
+# 商品名の取得に不要なリソース（画像・動画・フォント・CSS）は読み込まず、メモリと通信量を抑える
+BLOCKED_RESOURCE_TYPES = {'image', 'media', 'font', 'stylesheet'}
+
+
+async def get_favorite_items_info(page: Page, context: BrowserContext, max_items: int = 200,
+                                  existing_item_codes: Optional[set] = None) -> Optional[List[Dict]]:
     """
-    楽天市場のお気に入り商品情報を取得
-    
+    楽天市場のお気に入り商品のうち、スプレッドシートに未登録の商品の情報を取得
+
     Args:
         page: Playwrightのページオブジェクト（お気に入りページ遷移用）
-        browser: Playwrightのブラウザオブジェクト（各タスク用の独立コンテキスト作成用）
-        max_items: 取得する最大商品数
+        context: Playwrightのブラウザコンテキスト（商品ページを開くページの作成用。ログインセッションを共有する）
+        max_items: お気に入りから収集する商品URLの最大数（登録済みの商品も含む）
         existing_item_codes: スプレッドシートに登録済みの商品コードのset
-                             指定することで既存商品の商品ページ遷移をスキップできる
-    
+                             登録済みの商品は商品ページを開かずにスキップする
+
     Returns:
-        List[Dict]: 商品情報のリスト
+        List[Dict]: スプレッドシートに書き込む商品情報のリスト（新規商品が無い場合は空のリスト）
+        None: お気に入りページを開けないなど、取得に失敗した場合
     """
-    # Noneの場合は空のsetとして扱う
-    if existing_item_codes is None:
-        existing_item_codes = set()
+    logger = get_logger()
+    existing_item_codes = existing_item_codes or set()
+
     try:
-        print(f"[DEBUG] 現在のページからお気に入りリンクを探す: {page.url}")
- 
-        # お気に入りページへ移動
-        bookmark_link = await page.query_selector("a[href*=\"https://my.bookmark.rakuten.co.jp/?l-id=pc_header_func_bookmark\"]")
-        if bookmark_link:
-            print("[DEBUG] お気に入りリンクを発見、クリックします")
-            await bookmark_link.click()
-        else:
-            print(f"[DEBUG] お気に入りリンクが見つからないため直接アクセス: {RAKUTEN_FAVORITES_URL}")
-            try:
-                await page.goto(RAKUTEN_FAVORITES_URL, wait_until='domcontentloaded', timeout=30000)
-            except Exception as e:
-                print(f"[DEBUG] メインURL失敗、代替URLを試行: {e}")
-                await page.goto(RAKUTEN_FAVORITES_ALT_URL, wait_until='domcontentloaded', timeout=30000)
- 
-        await page.wait_for_load_state('domcontentloaded')
-        await asyncio.sleep(2)
-        print(f"[DEBUG] 最終URL: {page.url}")
- 
-        urls = []
-        visited_urls = set()
-        page_count = 0
- 
-        while len(urls) < max_items:
-            page_count += 1
-            print(f"[DEBUG] お気に入りページ収集: ページ {page_count}, 現在のURL数: {len(urls)}")
- 
-            # 動的ロード対策 (スクロール)
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await asyncio.sleep(1)
- 
-            # リンクを取得（指定エリア配下のみ）
-            links = await page.query_selector_all("a[href*='item.rakuten.co.jp']")
-            for link in links:
-                href = await link.get_attribute('href')
-                if not href or 'item.rakuten.co.jp' not in href:
-                    continue
- 
-                # sideBarBlock配下は除外
-                is_in_sidebar = await link.evaluate("node => !!node.closest('.styles__sideBarBlock___M-hla')")
-                if is_in_sidebar:
-                    continue
- 
-                # 中心エリア or bookmark-main 配下にあるリンクのみ許可
-                is_in_center = await link.evaluate("node => !!node.closest('.bookmarkPage__block--centerContent')")
-                is_in_main = await link.evaluate("node => !!node.closest('#bookmark-main')")
-                if not (is_in_center or is_in_main):
-                    continue
- 
-                clean_url = href.split('?')[0]
-                if clean_url not in visited_urls:
-                    visited_urls.add(clean_url)
-                    urls.append(clean_url)
- 
-                if len(urls) >= max_items:
-                    break
- 
-            if len(urls) >= max_items:
-                break
- 
-            # 次ページリンクを探す
-            # UIが React/CSS module でクラス指定の場合に対応
-            next_button = await page.query_selector("a.styles__nextPageBtn___3CWcG")
-            if not next_button:
-                next_button = await page.query_selector("a:has-text(\"次へ\")")
-            if not next_button:
-                next_button = await page.query_selector("a[aria-label='Next'], a[aria-label='次へ']")
- 
-            if not next_button:
-                print("[DEBUG] 次ページが見つかりません。ページ遷移は終了します。")
-                break
- 
-            is_disabled = await next_button.get_attribute('aria-disabled')
-            if is_disabled == 'true':
-                print("[DEBUG] 次ページボタンが無効化されています。終了します。")
-                break
- 
-            print("[DEBUG] 次ページへ遷移します")
-            await next_button.click()
-            await page.wait_for_load_state('domcontentloaded')
-            await asyncio.sleep(2)
- 
-        # 収集URL数
-        print(f"取得したお気に入り商品URL数: {len(urls)}")
- 
-        # 並列度制限を設定（同時に3コンテキストまで開く）
-        semaphore = asyncio.Semaphore(3)
-        
-        if not urls:
-            print("[DEBUG] お気に入り商品のURLが1件も収集できませんでした。")
-            return []
+        if not await open_favorites_page(page):
+            return None
 
-        # 既存商品をスキップして新規商品のみ処理対象にする
-        new_urls = []
-        skip_count = 0
-        for url in urls[:max_items]:
-            pattern = r'item\.rakuten\.co\.jp/([^/]+)/([^/?]+)'
-            match = re.search(pattern, url)
-            if match:
-                shop_code = match.group(1)
-                item_id = match.group(2)
-                item_code = f"{shop_code}:{item_id}"
-                # 既存商品は商品ページへの遷移をスキップ
-                if item_code in existing_item_codes:
-                    skip_count += 1
-                    continue
-            new_urls.append(url)
+        item_urls = await collect_favorite_item_urls(page, max_items)
+        logger.info(f"お気に入り商品のURLを{len(item_urls)}件取得しました")
 
-        print(f"新規商品: {len(new_urls)}件 / スキップ（既存）: {skip_count}件")
-
-        # 並列処理で新規商品のみ商品情報を取得
-        tasks = [
-            extract_item_info_with_semaphore(url, browser, semaphore) 
-            for url in new_urls
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 結果をフィルタリング（例外を除外）
-        items_data = [item for item in results if isinstance(item, dict)]
-        print(f"[DEBUG] 取得した商品情報件数: {len(items_data)}")
-        return items_data
-    except Exception as e:
-        print(f"お気に入り商品情報の取得に失敗しました: {e}")
-        return []
-
-
-async def extract_item_info_with_semaphore(url: str, browser: Browser, semaphore: asyncio.Semaphore) -> Optional[Dict]:
-    """
-    並列度制限付きで商品情報を抽出
-    
-    【セッション管理方針】
-    各タスクで独立したコンテキストを作成することで、セッションの有効性を保証します。
-    これにより、ページの収集エラーを防ぎ、メモリリークを最小化します。
-    
-    Args:
-        url: 商品URL
-        browser: ブラウザオブジェクト（新しいコンテキストを作成するのに使用）
-        semaphore: 並列制御用セマフォ
-    
-    Returns:
-        Dict: 商品情報またはNone
-    """
-    async with semaphore:
-        context = None
-        temp_page = None
-        try:
-            # 各タスクで独立したコンテキストを作成
-            # 【重要】page.context を使わず、新しいコンテキストを作成することで、
-            # セッション有効性を確保し、メモリ管理を最適化します
-            context = await browser.new_context()
-            
-            # そのコンテキスト内で新しいページを作成
-            temp_page = await context.new_page()
-            temp_page.set_default_timeout(30000)
-            temp_page.set_default_navigation_timeout(30000)
-            
-            # URLパターン解析
-            pattern = r'item\.rakuten\.co\.jp/([^/]+)/([^/?]+)'
-            match = re.search(pattern, url)
-            
-            if not match:
-                return None
-            
-            shop_code = match.group(1)
-            item_id = match.group(2)
-            item_code_combined = f"{shop_code}:{item_id}"
-            
-            # 商品名取得
-            item_name = await extract_item_name_from_item_page(temp_page, url)
-            
-            return {
-                'ItemURL': url,
+        # 登録済みの商品を除き、新規商品だけ商品ページを開く
+        new_items = []
+        for item_url in item_urls:
+            match = ITEM_URL_PATTERN.search(item_url)
+            shop_code, item_id = match.group(1), match.group(2)
+            item_code = f"{shop_code}:{item_id}"
+            if item_code in existing_item_codes:
+                continue
+            new_items.append({
+                'ItemURL': item_url,
                 'ShopCode': shop_code,
                 'ItemID': item_id,
-                'ItemCode': item_code_combined,
-                'ItemName': item_name,
-                'Collection': '',
-                'PostStatus': '',
-                'PostedDate': '',
-                'CollectionStatus': '',
-                'CollectedDate': ''
-            }
-        
-        except Exception as e:
-            print(f"URL解析エラー ({url}): {e}")
-            return None
-        finally:
-            # リソースを必ず解放（ページ→コンテキスト）
-            if temp_page:
-                try:
-                    await temp_page.close()
-                except Exception as e:
-                    print(f"一時ページのクローズに失敗しました: {e}")
-            if context:
-                try:
-                    await context.close()
-                except Exception as e:
-                    print(f"独立コンテキストのクローズに失敗しました: {e}")
+                'ItemCode': item_code,
+                'ItemName': '',
+                'PostStatus': '未',
+                'CollectionStatus': '未',
+            })
 
+        logger.info(f"新規商品: {len(new_items)}件 / スキップ（登録済み）: {len(item_urls) - len(new_items)}件")
+        if not new_items:
+            return []
 
-async def extract_item_info_from_url(url: str, page: Page) -> Optional[Dict]:
-    """
-    URLから商品情報を抽出
-    
-    Args:
-        url: 商品URL
-        page: Playwrightのページオブジェクト
-    
-    Returns:
-        Dict: 商品情報（itemCode, shopCode, itemId, ItemName等）
-    """
-    try:
-        # URLパターン: https://item.rakuten.co.jp/{shopCode}/{itemCode}/
-        # または: https://item.rakuten.co.jp/{shopCode}/{itemCode}
-        pattern = r'item\.rakuten\.co\.jp/([^/]+)/([^/?]+)'
-        match = re.search(pattern, url)
-        
-        if not match:
-            return None
-        
-        shop_code = match.group(1)
-        item_id = match.group(2)
-        item_code_combined = f"{shop_code}:{item_id}"
-        item_name = await extract_item_name_from_item_page(page, url)
- 
-        return {
-            'ItemURL': url,
-            'ShopCode': shop_code,
-            'ItemID': item_id,
-            'ItemCode': item_code_combined,
-            'ItemName': item_name,
-            'Collection': '',
-            'PostStatus': '',
-            'PostedDate': '',
-            'CollectionStatus': '',
-            'CollectedDate': ''
-        }
-    
+        await fill_item_names(context, new_items)
+
+        # 商品名を取得できなかった商品は書き込まない（スプレッドシートに未登録のため、次回の実行で再取得する）
+        items = []
+        for item in new_items:
+            if item['ItemName']:
+                items.append(item)
+            else:
+                logger.warning(f"商品名を取得できなかったため、今回は登録しません: {item['ItemURL']}")
+        return items
+
     except Exception as e:
-        print(f"URL解析エラー ({url}): {e}")
+        logger.error(f"お気に入り商品情報の取得に失敗しました: {e}")
         return None
- 
- 
+
+
+async def open_favorites_page(page: Page, timeout: int = 30000) -> bool:
+    """
+    お気に入りページを開く
+
+    お気に入りページの表示時に楽天から再認証（ログイン画面）を求められた場合は、
+    認証を完了させてからお気に入りページを開き直します。
+
+    Args:
+        page: Playwrightのページオブジェクト
+        timeout: お気に入り一覧（またはログイン画面）が表示されるまでの最大待機時間（ミリ秒）
+
+    Returns:
+        bool: お気に入りページを開けた場合True
+    """
+    logger = get_logger()
+    favorites_area = page.locator('#bookmark-main, .bookmarkPage__block--centerContent').first
+
+    async def goto_favorites() -> bool:
+        """お気に入りページを開き、一覧が表示されればTrue、ログイン画面に移動すればFalse"""
+        await page.goto(RAKUTEN_FAVORITES_URL, wait_until='domcontentloaded')
+        deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+        while asyncio.get_running_loop().time() < deadline:
+            if is_login_page(page.url):
+                return False
+            if await favorites_area.count() > 0:
+                return True
+            await asyncio.sleep(0.5)
+        raise RuntimeError(f"お気に入り一覧が表示されませんでした。現在のURL: {page.url}")
+
+    if await goto_favorites():
+        return True
+
+    logger.info("お気に入りページの表示前に再認証を求められたため、ログインします")
+    if not await complete_login_form(page):
+        logger.error("お気に入りページ表示前の再認証に失敗しました")
+        return False
+
+    if await goto_favorites():
+        return True
+
+    logger.error(f"再認証後もお気に入りページを表示できませんでした。現在のURL: {page.url}")
+    return False
+
+
+async def collect_favorite_item_urls(page: Page, max_items: int) -> List[str]:
+    """
+    お気に入り一覧をページ送りしながら、商品URLを重複なく収集する
+
+    Args:
+        page: お気に入りページを表示しているページ
+        max_items: 収集する商品URLの最大数
+
+    Returns:
+        List[str]: 商品URL（https://item.rakuten.co.jp/{ShopCode}/{ItemID}/ の形式）
+    """
+    item_urls = []
+    seen_item_codes = set()
+
+    for page_count in range(1, MAX_FAVORITE_PAGES + 1):
+        # 動的ロード対策 (スクロール)
+        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+        await asyncio.sleep(1)
+
+        hrefs = await page.eval_on_selector_all("a[href*='item.rakuten.co.jp']", COLLECT_LINKS_SCRIPT)
+        added = 0
+        for href in hrefs:
+            match = ITEM_URL_PATTERN.search(href)
+            if not match:
+                continue
+            shop_code, item_id = match.group(1), match.group(2)
+            item_code = f"{shop_code}:{item_id}"
+            if item_code in seen_item_codes:
+                continue
+            seen_item_codes.add(item_code)
+            # クエリ（?scid=...）等を除いた形にそろえる
+            item_urls.append(f"https://item.rakuten.co.jp/{shop_code}/{item_id}/")
+            added += 1
+            if len(item_urls) >= max_items:
+                return item_urls
+
+        print(f"[DEBUG] お気に入りページ {page_count}: {added}件追加（累計 {len(item_urls)}件）")
+
+        # 新しい商品が1件も無い = ページが切り替わっていない、または最終ページ
+        if added == 0 and page_count > 1:
+            break
+
+        next_button = page.locator(NEXT_BUTTON_SELECTOR).first
+        if await next_button.count() == 0 or await next_button.get_attribute('aria-disabled') == 'true':
+            print("[DEBUG] 次ページがありません。収集を終了します。")
+            break
+
+        await next_button.click()
+        await wait_for_list_change(page, hrefs)
+    else:
+        get_logger().warning(f"お気に入り一覧のページ送りが上限（{MAX_FAVORITE_PAGES}ページ）に達したため、収集を終了します")
+
+    return item_urls
+
+
+async def wait_for_list_change(page: Page, previous_hrefs: List[str], timeout: int = 15000):
+    """「次へ」をクリックした後、一覧の商品リンクが切り替わるまで待つ（同一ページ内で書き換わる場合にも対応）"""
+    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.5)
+        try:
+            hrefs = await page.eval_on_selector_all("a[href*='item.rakuten.co.jp']", COLLECT_LINKS_SCRIPT)
+        except Exception:
+            continue  # ページ遷移中は取得できないため、次のループで再取得する
+        if hrefs and hrefs != previous_hrefs:
+            return
+
+
+async def block_heavy_resources(route: Route):
+    """商品名の取得に不要なリソースの読み込みを中止する"""
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.fallback()
+
+
+async def fill_item_names(context: BrowserContext, items: List[Dict]):
+    """
+    商品ページを開いて商品名を取得し、各商品のItemNameに設定する
+
+    【メモリ・速度対策】
+    同時にMAX_PARALLEL_PAGES個のページだけを作成し、各ページで商品ページを順番に開き直して使い回す。
+    画像・CSS等は読み込まない。ページは処理後に必ず閉じる。
+
+    Args:
+        context: ブラウザコンテキスト（ログインセッションを共有する）
+        items: 商品情報のリスト（ItemURLを使用し、ItemNameを書き換える）
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    for item in items:
+        queue.put_nowait(item)
+
+    async def worker():
+        page = await context.new_page()
+        try:
+            page.set_default_timeout(30000)
+            page.set_default_navigation_timeout(30000)
+            await page.route("**/*", block_heavy_resources)
+            while not queue.empty():
+                item = queue.get_nowait()
+                item['ItemName'] = await extract_item_name_from_item_page(page, item['ItemURL'])
+        finally:
+            await page.close()
+
+    await asyncio.gather(*(worker() for _ in range(min(MAX_PARALLEL_PAGES, len(items)))))
+
+
 async def extract_item_name_from_item_page(page: Page, item_url: str) -> str:
     """
-    商品ページのHTMLから商品名を取得します。
+    商品ページのHTMLから商品名を取得する
 
     【取得方法】
-    domcontentloadedでHTML骨格が読み込まれた後、
-    各要素が表示されるまで個別に待機します。
-    これにより広告や追跡ツールの通信を待たずに済み、
-    タイムアウトを防ぎながら確実に商品名を取得できます。
+    domcontentloadedでHTML骨格が読み込まれた時点で、次の順に商品名を探す。
+    広告や追跡ツールの通信は待たない。
+      ① meta[itemprop="name"]（動的に描画するショップもあるため最大10秒待つ）
+      ② meta[property="og:title"]
+      ③ ページタイトル
+    ②③は「【楽天市場】商品名：ショップ名」の形式のため、商品名の部分だけを取り出す。
+
+    Returns:
+        str: 商品名（取得できなかった場合は空文字）
     """
     try:
-        # HTML骨格が読み込まれた時点で処理を開始
-        await page.goto(item_url, wait_until='domcontentloaded', timeout=30000)
+        await page.goto(item_url, wait_until='domcontentloaded')
 
-        # ① meta[itemprop="name"]が表示されるまで最大10秒待つ
-        # 静的なショップはすぐ取得できる、動的なショップも10秒以内に描画される
+        # meta要素は画面に表示されないため、state='attached'（DOMへの追加）で待つ
         try:
-            await page.wait_for_selector('meta[itemprop="name"]', timeout=10000)
-            meta_name = await page.query_selector('meta[itemprop="name"]')
-            if meta_name:
-                item_name = await meta_name.get_attribute('content') or ''
-                if item_name:
-                    return item_name.strip()
+            meta_name = await page.wait_for_selector('meta[itemprop="name"]', state='attached', timeout=10000)
+            item_name = (await meta_name.get_attribute('content') or '').strip()
+            if item_name:
+                return item_name
         except Exception:
-            pass  # タイムアウトした場合は次の要素を試す
+            pass  # 見つからない場合は次の方法を試す
 
-        # ② og:titleが表示されるまで最大5秒待つ
-        try:
-            await page.wait_for_selector('meta[property="og:title"]', timeout=5000)
-            meta_og = await page.query_selector('meta[property="og:title"]')
-            if meta_og:
-                item_name = await meta_og.get_attribute('content') or ''
-                if item_name:
-                    return item_name.strip()
-        except Exception:
-            pass  # タイムアウトした場合は次の要素を試す
-
-        # ③ 最終手段: ページタイトル（domcontentloaded時点で取得可能）
-        return (await page.title() or '').strip()
+        og_title = await page.query_selector('meta[property="og:title"]')
+        title = (await og_title.get_attribute('content') or '') if og_title else ''
+        return clean_page_title(title or await page.title())
 
     except Exception as e:
-        print(f"商品ページからItemNameを取得できませんでした: {item_url} - {e}")
+        get_logger().error(f"商品ページから商品名を取得できませんでした: {item_url} - {e}")
         return ''
- 
- 
-def build_items_to_write(favorite_items: List[Dict]) -> List[Dict]:
-    """
-    お気に入り商品リストをスプレッドシート書き込み用データに整形する
- 
-    get_favorite_items_info()で取得した商品リストに対して、
-    ページから抽出したItemNameを含めて書き込み用の形式に変換します。
- 
-    Args:
-        favorite_items: get_favorite_items_info()で取得した商品リスト
- 
-    Returns:
-        List[Dict]: スプレッドシート書き込み用の商品情報リスト
-    """
-    items_to_write = []
-    for item in favorite_items:
-        item_code = item.get('ItemCode', '')
-        if not item_code:
-            continue
- 
-        items_to_write.append({
-            'ItemURL': item.get('ItemURL', ''),
-            'ShopCode': item.get('ShopCode', ''),
-            'ItemID': item.get('ItemID', ''),
-            'ItemCode': item_code,
-            'ItemName': item.get('ItemName', ''),
-            'PostStatus': '未',
-            'CollectionStatus': '未'
-        })
-    return items_to_write
- 
- 
-async def scroll_to_load_all_items(page: Page) -> List[str]:
-    """
-    ページをスクロールして全アイテムを読み込む
-    
-    ページの最下部までスクロールして、動的に読み込まれるアイテムを
-    すべて取得します。
-    
-    Args:
-        page: Playwrightのページオブジェクト
-    
-    Returns:
-        List[str]: 商品URLのリスト
-    """
-    urls = []
-    
-    try:
-        previous_height = await page.evaluate('document.body.scrollHeight')
-        
-        while True:
-            # ページの最下部までスクロール
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await asyncio.sleep(2)
-            
-            # 新しい高さを取得
-            new_height = await page.evaluate('document.body.scrollHeight')
-            
-            if new_height == previous_height:
-                break
-            
-            previous_height = new_height
-        
-        # すべてのリンクを取得
-        links = await page.query_selector_all("a[href*='item.rakuten.co.jp']")
-        for link in links:
-            href = await link.get_attribute('href')
-            if href and 'item.rakuten.co.jp' in href:
-                clean_url = href.split('?')[0]
-                urls.append(clean_url)
-    
-    except Exception as e:
-        print(f"スクロール処理でエラーが発生しました: {e}")
-    
-    return list(set(urls))
+
+
+def clean_page_title(title: str) -> str:
+    """「【楽天市場】商品名：ショップ名」形式のタイトルから商品名の部分を取り出す"""
+    title = title.strip()
+    if title.startswith('【楽天市場】'):
+        title = title[len('【楽天市場】'):]
+        # 末尾の「：ショップ名」を除く（商品名に「：」が含まれる場合を考慮し、最後の1つだけ）
+        if '：' in title:
+            title = title.rsplit('：', 1)[0]
+    return title.strip()
