@@ -4,16 +4,26 @@
 このモジュールでは以下を定義します：
 - 楽天ログイン情報（ユーザーID、パスワード）
 - Google Sheets連携情報（spreadsheet ID、sheet name）
-- API情報（楽天AppID、OpenAI API Key）
+- ログ・user_dataの保存先
 - Playwrightとタイムアウト設定
 - Google Sheets APIスコープ
-- スプレッドシート列定義
-- 楽天ルームURL定義
+- 楽天市場URL定義
 """
 import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+
+
+# プログラムのフォルダ（user_data・logsの保存先）
+# - .exe実行時: RakutenFavorite.exe と同じフォルダ
+# - python main.py 実行時: このファイルのあるフォルダ（プロジェクト直下）
+# 実行時の作業フォルダ（タスクスケジューラの「開始」設定など）に左右されないよう固定する
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, 'frozen', False)
+    else Path(__file__).resolve().parent
+)
 
 
 def _resolve_env_path() -> Path | None:
@@ -71,11 +81,18 @@ SHEET_NAME = os.getenv('SHEET_NAME', 'Sheet1')  # シート名
 SERVICE_ACCOUNT_PATH = _resolve_path_from_env(os.getenv('SERVICE_ACCOUNT_PATH', ''), ENV_DIR)
 
 # ============================================================
+# ログの保存先
+# .envのLOG_DIRで任意のフォルダを指定できる（相対パスはプログラムのフォルダ基準）
+# 未指定の場合はプログラムのフォルダの logs
+# ============================================================
+_log_dir = os.getenv('LOG_DIR', '').strip()
+LOG_DIR = (APP_DIR / _log_dir).resolve() if _log_dir else APP_DIR / 'logs'
+
+# ============================================================
 # Playwright設定
 # （ブラウザ自動化ツールの設定）
 # ============================================================
 PLAYWRIGHT_BROWSERS_PATH = _resolve_path_from_env(os.getenv('PLAYWRIGHT_BROWSERS_PATH', ''), ENV_DIR)
-CHROMIUM_EXECUTABLE_PATH = _resolve_path_from_env(os.getenv('CHROMIUM_EXECUTABLE_PATH', ''), ENV_DIR)
 
 if not PLAYWRIGHT_BROWSERS_PATH and getattr(sys, 'frozen', False):
     default_playwright = Path(os.path.expanduser('~')) / 'AppData' / 'Local' / 'ms-playwright'
@@ -87,8 +104,7 @@ if PLAYWRIGHT_BROWSERS_PATH:
 
 HEADLESS_MODE = False   # ヘッドレスモード（UIを表示しない）
 BROWSER_TIMEOUT = 60000  # ブラウザタイムアウト時間（ミリ秒）
-PAGE_LOAD_TIMEOUT = 30000  # ページ読み込み待機時間（ミリ秒）
-NAVIGATION_TIMEOUT = 30000  # ナビゲーション待機時間（ミリ秒）
+NAVIGATION_TIMEOUT = 60000  # ナビゲーション待機時間（ミリ秒）
 
 # ============================================================
 # APIスコープ
@@ -96,27 +112,7 @@ NAVIGATION_TIMEOUT = 30000  # ナビゲーション待機時間（ミリ秒）
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
 # ============================================================
-# スプレッドシート列定義
-# （各列がどの情報を保持するかを指定）
-# ============================================================
-COLUMN_MAP = {
-    'ItemURL': 'A',           # A列: 商品URL
-    'ShopCode': 'B',          # B列: ショップコード
-    'ItemID': 'C',            # C列: 商品ID
-    'ItemCode': 'D',          # D列: 商品コード
-    'ItemName': 'E',          # E列: 商品名
-    'CollectionName': 'F',    # F列: コレクション名
-    'CollectionGenre': 'G',   # G列: コレクションジャンル
-    'PostStatus': 'H',        # H列: 投稿ステータス (未/済)
-    'PostedDate': 'I',        # I列: 投稿日時
-    'CollectionStatus': 'J',  # J列: コレクションステータス (未/済)
-    'CollectedDate': 'K'      # K列: コレクション日時
-}
-
-# ============================================================
 # 楽天市場URL定義
 # ============================================================
 RAKUTEN_FAVORITES_URL = "https://my.bookmark.rakuten.co.jp/"  # 楽天お気に入りページ
-RAKUTEN_FAVORITES_ALT_URL = "https://my.bookmark.rakuten.co.jp/?l-id=pc_header_func_bookmark"  # 代替URL（マイページ）
-RAKUTEN_ICHIBA_BASE_URL = "https://www.rakuten.co.jp/"  # 楽天市場ベースURL
-RAKUTEN_ITEM_BASE_URL = "https://item.rakuten.co.jp"  # 楽天商品ページベースURL
+RAKUTEN_MY_URL = "https://my.rakuten.co.jp/"  # ログイン状態の判定に使う会員ページ

@@ -1,99 +1,124 @@
 """
 ブラウザ管理モジュール - Playwrightを使用したブラウザ操作
 
-Playwrightを使用してブラウザの起動、ページ推移、終了を管理します。
+Playwrightを使用してブラウザの起動、終了を管理します。
+ログインセッションはuser_dataフォルダに保存し、2回目以降のログインを省略します。
 """
-import asyncio
-from playwright.async_api import async_playwright, Browser, Page
-from config import HEADLESS_MODE, BROWSER_TIMEOUT, NAVIGATION_TIMEOUT
+from playwright.async_api import async_playwright, BrowserContext, Page
+from config import APP_DIR, HEADLESS_MODE, BROWSER_TIMEOUT, NAVIGATION_TIMEOUT
+
+# パスキー（publicKey）のnavigator.credentials.getを、ユーザーがキャンセルした時と同じ
+# NotAllowedErrorで失敗させる。保存済みパスワードの照会（publicKeyなし）はそのまま通す。
+CANCEL_PASSKEY_SCRIPT = """
+(() => {
+  if (!navigator.credentials || !navigator.credentials.get) return;
+  const originalGet = navigator.credentials.get.bind(navigator.credentials);
+  navigator.credentials.get = (options) => {
+    if (options && options.publicKey) {
+      return Promise.reject(new DOMException('Passkey was cancelled by automation.', 'NotAllowedError'));
+    }
+    return originalGet(options);
+  };
+})();
+"""
 
 
 class BrowserManager:
     """Playwrightを使用したブラウザ実装を管理するクラス"""
-    
+
     def __init__(self):
-        # 初期化: Playwright、Browser、Pageオブジェクトを保持する変数
+        # 初期化: Playwright、BrowserContext、Pageオブジェクトを保持する変数
         self.playwright = None
-        self.browser = None
+        self.context = None
         self.page = None
-    
+
     async def launch(self):
         """
         ブラウザを起動
-        
+
         1. Playwrightを初期化
-        2. Chromiumブラウザを読動
-        3. 新しいページを作成
+        2. 永続コンテキスト（user_data）を設定してChromiumを起動
+        3. ページを取得（または作成）
         4. タイムアウトを設定
         """
         self.playwright = await async_playwright().start()
-        
-        # Chromiumブラウザを起動（headlessモードは設定値で決定）
-        self.browser = await self.playwright.chromium.launch(headless=HEADLESS_MODE)
-        
-        # 新しいページを作成
-        self.page = await self.browser.new_page()
-        
-        # タイムアウトを設定。謟隊承起時間内を矢接後、エラーを発生
+
+        # .pyはプロジェクト直下、.exeはEXEと同じフォルダに保存する
+        user_data_dir = APP_DIR / "user_data"
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Chromiumのユーザーデータ保存先: {user_data_dir}")
+
+        # Chromiumブラウザを永続コンテキスト（launch_persistent_context）で起動
+        self.context = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir=str(user_data_dir),
+            headless=HEADLESS_MODE,
+            args=[
+                # bot検出（AutomationControlled）を回避
+                "--disable-blink-features=AutomationControlled",
+            ],
+            # 一般的なデスクトップChromeのUser-Agentを設定してbot判定を回避
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800}
+        )
+
+        # パスキー（WebAuthn）要求を即座にキャンセル扱いにする
+        # これによりChromeのパスキーQRダイアログを出さず、パスワードログインに切り替えられる
+        await self.context.add_init_script(CANCEL_PASSKEY_SCRIPT)
+
+        # 起動時に自動生成されたページを取得（無ければ新規作成）
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+
+        # タイムアウトを設定
         self.page.set_default_timeout(BROWSER_TIMEOUT)
-        
+
         # ナビゲーション待機時間を設定
         self.page.set_default_navigation_timeout(NAVIGATION_TIMEOUT)
-        
+
         return self.page
-    
+
     async def close(self):
-        """
-        ブラウザを終了 (逆順で終了)
-        
-        1. ページを閉じる
-        2. ブラウザを閉じる
-        3. Playwrightを終了
-        """
-        if self.page:
-            await self.page.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
-    
-    async def goto(self, url: str):
-        """
-        指定URLに移動
-        
-        Args:
-            url: 移動先URL
-        """
-        # 'domcontentloaded': ページの基本的な読み込みが完了した時点で継続
-        # これにより、不要なネットワーク待機を回避
-        await self.page.goto(url, wait_until='domcontentloaded')
-    
+        """ブラウザコンテキストおよびPlaywrightを閉じる（二重クローズ・エラー防止版）"""
+        try:
+            if self.page and not self.page.is_closed():
+                await self.page.close()
+        except Exception:
+            pass
+
+        try:
+            if self.context:
+                await self.context.close()
+        except Exception:
+            pass  # すでに閉じられている場合の TargetClosedError を無視
+
+        try:
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception:
+            pass
+
     async def get_page(self) -> Page:
-        """
-        ページオブジェクトを取得
-        
-        Returns:
-            Page: Playwrightページオブジェクト
-        """
+        """ページオブジェクトを取得"""
+        if self.page is None:
+            raise RuntimeError("ブラウザが起動していません")
         return self.page
-    
-    def get_browser(self) -> Browser:
+
+    def get_context(self) -> BrowserContext:
         """
-        ブラウザオブジェクトを取得（独立したコンテキスト作成用）
-        
-        Returns:
-            Browser: Playwrightブラウザオブジェクト
+        ブラウザコンテキストを取得（商品ページを並列で開くための新規ページ作成用）
+
+        永続コンテキストのため、ここで開いたページもログインセッションを共有します。
         """
-        return self.browser
+        if self.context is None:
+            raise RuntimeError("ブラウザが起動していません")
+        return self.context
 
 
 async def create_browser_manager() -> BrowserManager:
-    """
-    BrowserManagerインスタンスを起動し作成
-    
-    Returns:
-        BrowserManager: 設定されて起動済みのブラウザ管理オブジェクト
-    """
+    """BrowserManagerインスタンスを生成"""
     manager = BrowserManager()
     await manager.launch()
     return manager
